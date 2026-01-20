@@ -21,8 +21,21 @@ app.use(cors({
 }));
 app.use(express.json());
 
+app.get("/debug/syllabi-index", async (_req, res) => {
+  try {
+    const idx = await getSyllabiIndex();
+    res.json({ ok: true, courses: Object.keys(idx) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 const PROVIDER = process.env.PROVIDER || "openai";
+
+const SYLLABI_INDEX_URL = process.env.SYLLABI_INDEX_URL; // set in .env / Render
+const SYLLABI_CACHE_TTL_MS = Number(process.env.SYLLABI_CACHE_TTL_MS || 15 * 60 * 1000); // 15 min
+
 
 function univieSemesterLabel(dateObj) {
   const m = dateObj.getMonth() + 1; // 1..12
@@ -33,6 +46,40 @@ function univieSemesterLabel(dateObj) {
   if (m === 1) return `WS ${y - 1}/${String(y).slice(-2)}`;
 
   return `Semester break (${y})`;
+}
+
+const cache = {
+  index: { value: null, fetchedAt: 0 },
+  syllabi: new Map() // url -> { value, fetchedAt }
+};
+
+async function fetchText(url) {
+  const resp = await fetch(url, { method: "GET" });
+  if (!resp.ok) throw new Error(`Failed to fetch ${url}: ${resp.status}`);
+  return await resp.text();
+}
+
+async function getSyllabiIndex() {
+  if (!SYLLABI_INDEX_URL) throw new Error("Missing SYLLABI_INDEX_URL");
+  const now = Date.now();
+  if (cache.index.value && (now - cache.index.fetchedAt) < SYLLABI_CACHE_TTL_MS) {
+    return cache.index.value;
+  }
+  const raw = await fetchText(SYLLABI_INDEX_URL);
+  const parsed = JSON.parse(raw);
+  cache.index = { value: parsed, fetchedAt: now };
+  return parsed;
+}
+
+async function getSyllabusText(url) {
+  const now = Date.now();
+  const cached = cache.syllabi.get(url);
+  if (cached && (now - cached.fetchedAt) < SYLLABI_CACHE_TTL_MS) {
+    return cached.value;
+  }
+  const text = await fetchText(url);
+  cache.syllabi.set(url, { value: text, fetchedAt: now });
+  return text;
 }
 
 async function callLLM(messages) {
