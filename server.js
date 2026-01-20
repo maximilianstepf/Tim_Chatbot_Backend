@@ -152,7 +152,7 @@ app.post("/api/chat", async (req, res) => {
     "- Institute: Institut für Rechnungswesen, Innovation und Strategie\n" +
     "- Faculty: Faculty of Business, Economics and Statistics\n" +
     "- University: University of Vienna\n" +
-    "- TIM offers multiple courses and specializations within Business Administration, International Business, and related curricula.\n\n" +
+    "- TIM offers multiple courses as part of one specialization within Business Administration, International Business, and related curricula.\n\n" +
 
     "Scope and authority:\n" +
     "- You support students taking ANY TIM course.\n" +
