@@ -21,15 +21,6 @@ app.use(cors({
 }));
 app.use(express.json());
 
-app.get("/debug/syllabi-index", async (_req, res) => {
-  try {
-    const idx = await getSyllabiIndex();
-    res.json({ ok: true, courses: Object.keys(idx) });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e.message || e) });
-  }
-});
-
 const PORT = process.env.PORT || 3000;
 const PROVIDER = process.env.PROVIDER || "openai";
 
@@ -139,7 +130,14 @@ app.get("/debug/time", (_req, res) => {
   });
 });
 
-
+app.get("/debug/syllabi-index", async (_req, res) => {
+  try {
+    const idx = await getSyllabiIndex();
+    res.json({ ok: true, courses: Object.keys(idx) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
 
 // Main chat endpoint
 app.post("/api/chat", async (req, res) => {
@@ -174,6 +172,47 @@ app.post("/api/chat", async (req, res) => {
     // Use the last user message content as the authority.
     const lastUser = [...messages].reverse().find(m => m?.role === "user");
     const lastUserText = (lastUser?.content || "").toString();
+
+    // Load syllabi index and try to detect course from the user's message
+let syllabusContextMessage = null;
+
+try {
+  const indexObj = await getSyllabiIndex();
+  const detectedCourse = findCourseFromUserText(indexObj, lastUserText);
+
+  // Heuristic: questions that usually require a specific course syllabus
+  const needsCourse =
+    /prüfung|exam|deadline|anmeldung|registration|note|grading|bewertung|attendance|anwesenheit|raum|room|termin|date|uhrzeit|time/i.test(lastUserText);
+
+  const courseList = Object.keys(indexObj);
+
+  if (!detectedCourse && needsCourse && courseList.length > 1) {
+    // Ask ONE clarifying question and stop (no model call needed)
+    return res.json({
+      reply: `Für welchen TIM-Kurs meinst du das? (${courseList.join(" / ")})`
+    });
+  }
+
+  if (detectedCourse) {
+    const url = indexObj[detectedCourse]?.syllabus_url;
+    if (url) {
+      const syllabusText = await getSyllabusText(url);
+      syllabusContextMessage = {
+        role: "system",
+        content:
+          `Authoritative syllabus (use this first). Course: ${detectedCourse}\n` +
+          `Rules:\n` +
+          `- For organizational questions, answer ONLY if the answer is in this syllabus text.\n` +
+          `- If not in syllabus, say so and ask one clarifying question or suggest checking official Uni Wien pages.\n\n` +
+          syllabusText
+      };
+    }
+  }
+} catch (e) {
+  console.error("Syllabus loading failed:", e);
+  // If syllabus fetch fails, continue without syllabus rather than breaking the bot.
+}
+
 
     const runtimeContextMessage = {
       role: "system",
@@ -233,7 +272,12 @@ app.post("/api/chat", async (req, res) => {
 };
 
 
-    const reply = await callLLM([runtimeContextMessage, systemMessage, ...messages]);
+    const outbound = syllabusContextMessage
+  ? [runtimeContextMessage, systemMessage, syllabusContextMessage, ...messages]
+  : [runtimeContextMessage, systemMessage, ...messages];
+
+const reply = await callLLM(outbound);
+
     res.json({ reply });
   } catch (err) {
     console.error(err);
