@@ -33,24 +33,12 @@ app.get("/debug/syllabi-index", async (_req, res) => {
 const PORT = process.env.PORT || 3000;
 const PROVIDER = process.env.PROVIDER || "openai";
 
-const SYLLABI_INDEX_URL = process.env.SYLLABI_INDEX_URL; // set in .env / Render
+const SYLLABI_INDEX_URL = process.env.SYLLABI_INDEX_URL;
 const SYLLABI_CACHE_TTL_MS = Number(process.env.SYLLABI_CACHE_TTL_MS || 15 * 60 * 1000); // 15 min
 
-
-function univieSemesterLabel(dateObj) {
-  const m = dateObj.getMonth() + 1; // 1..12
-  const y = dateObj.getFullYear();
-
-  if (m >= 3 && m <= 6) return `SS ${y}`;
-  if (m >= 10 && m <= 12) return `WS ${y}/${String(y + 1).slice(-2)}`;
-  if (m === 1) return `WS ${y - 1}/${String(y).slice(-2)}`;
-
-  return `Semester break (${y})`;
-}
-
-const cache = {
+const syllabusCache = {
   index: { value: null, fetchedAt: 0 },
-  syllabi: new Map() // url -> { value, fetchedAt }
+  byUrl: new Map() // url -> { value, fetchedAt }
 };
 
 async function fetchText(url) {
@@ -60,26 +48,38 @@ async function fetchText(url) {
 }
 
 async function getSyllabiIndex() {
-  if (!SYLLABI_INDEX_URL) throw new Error("Missing SYLLABI_INDEX_URL");
+  if (!SYLLABI_INDEX_URL) throw new Error("Missing SYLLABI_INDEX_URL env var");
   const now = Date.now();
-  if (cache.index.value && (now - cache.index.fetchedAt) < SYLLABI_CACHE_TTL_MS) {
-    return cache.index.value;
+  if (syllabusCache.index.value && (now - syllabusCache.index.fetchedAt) < SYLLABI_CACHE_TTL_MS) {
+    return syllabusCache.index.value;
   }
   const raw = await fetchText(SYLLABI_INDEX_URL);
   const parsed = JSON.parse(raw);
-  cache.index = { value: parsed, fetchedAt: now };
+  syllabusCache.index = { value: parsed, fetchedAt: now };
   return parsed;
 }
 
 async function getSyllabusText(url) {
   const now = Date.now();
-  const cached = cache.syllabi.get(url);
+  const cached = syllabusCache.byUrl.get(url);
   if (cached && (now - cached.fetchedAt) < SYLLABI_CACHE_TTL_MS) {
     return cached.value;
   }
   const text = await fetchText(url);
-  cache.syllabi.set(url, { value: text, fetchedAt: now });
+  syllabusCache.byUrl.set(url, { value: text, fetchedAt: now });
   return text;
+}
+
+function findCourseFromUserText(indexObj, userText) {
+  const t = (userText || "").toLowerCase();
+  for (const [courseName, meta] of Object.entries(indexObj)) {
+    const aliases = [courseName, ...(meta.aliases || [])]
+      .map(s => String(s).toLowerCase())
+      .filter(Boolean);
+
+    if (aliases.some(a => t.includes(a))) return courseName;
+  }
+  return null;
 }
 
 async function callLLM(messages) {
