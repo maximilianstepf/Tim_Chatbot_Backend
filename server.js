@@ -25,7 +25,7 @@ app.use(express.json({ limit: "1mb" }));
 
 const PORT = process.env.PORT || 3000;
 
-// -------------------- Config --------------------
+// -------------------- Config -------------------
 const PROVIDER = process.env.PROVIDER || "openai";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
