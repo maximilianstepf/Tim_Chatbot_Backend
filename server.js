@@ -1006,7 +1006,7 @@ app.post("/api/chat", async (req, res) => {
     const contentReply = await callContentLLM(outbound);
 
 if (USE_WEB_SEARCH && contentNeedsLiveCheck(lastUserText)) {
-  console.log("WEB SEARCH TRIGGERED:", userText);
+  console.log("WEB SEARCH TRIGGERED:", lastuserText);
   const web = await callWebSearch({
     userText: lastUserText,
     language,
