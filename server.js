@@ -1005,19 +1005,25 @@ app.post("/api/chat", async (req, res) => {
     const outbound = [runtimeContextMessage, systemMessage, ...messages];
     const contentReply = await callContentLLM(outbound);
 
-    // “Double-check” content questions only when they are about Uni/TIM facts
-    if (USE_WEB_SEARCH && contentNeedsLiveCheck(lastUserText)) {
-      const web = await callWebSearch({
-        userText: lastUserText,
-        language,
-        allowedDomains: webSearchDomainsFor("content"),
-      });
+if (USE_WEB_SEARCH && contentNeedsLiveCheck(lastUserText)) {
+  const web = await callWebSearch({
+    userText: lastUserText,
+    language,
+    allowedDomains: webSearchDomainsFor("content"),
+  });
 
-      // Prefer web result if it comes with citations; otherwise keep the content reply.
-      if (web?.ok && web.text && web.citations?.length) {
-        return res.json({ reply: formatWebAnswer(web.text, web.citations) });
-      }
-    }
+  if (web?.ok && web.text && web.citations?.length) {
+    return res.json({ reply: formatWebAnswer(web.text, web.citations) });
+  }
+
+  // HARD FAIL instead of hallucinating
+  return res.json({
+    reply:
+      language === "de"
+        ? "Ich konnte dazu keine verlässliche Information auf den offiziellen Uni-Wien/TIM-Seiten finden. Bitte prüfe die TIM-Webseite oder u:find."
+        : "I could not find reliable information on the official Uni Wien/TIM pages. Please check the TIM website or u:find.",
+  });
+}
 
     return res.json({ reply: contentReply });
   } catch (err) {
