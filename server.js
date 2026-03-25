@@ -72,39 +72,37 @@ function univieSemesterLabel(dateObj) {
 
 function classifyIntent(text) {
   const t = (text || "").toLowerCase();
-
-  // Treat "credits" as organizational (prevents hallucinations like "3 ECTS")
   const org =
-    /exam|prüfung|deadline|due|abgabe|grading|bewertung|points|punkte|attendance|anwesenheit|room|raum|time|uhrzeit|date|termin|moodle|turnitin|plagiarism|ects|sws|credits?|session|einheit|registration|anmeldung|deregistration|abmeldung/i.test(
+    /exam|prüfung|deadline|due|abgabe|grading|bewertung|points|punkte|attendance|anwesenheit|room|raum|where|wo\b|location|ort|time|uhrzeit|date|termin|moodle|turnitin|plagiarism|ects|sws|credits?|session|einheit|registration|anmeldung|deregistration|abmeldung|take place|stattfinden|held/i.test(
       t
     );
   return org ? "org" : "content";
 }
 
 function isLikelyCourseSpecific(text) {
-  return /prüfung|exam|deadline|abgabe|due|grading|bewertung|attendance|anwesenheit|room|raum|termin|date|uhrzeit|time|ects|sws|credits?|turnitin|moodle|session|einheit|registration|anmeldung/i.test(
+  return /prüfung|exam|deadline|abgabe|due|grading|bewertung|attendance|anwesenheit|room|raum|where|wo\b|location|ort|termin|date|uhrzeit|time|ects|sws|credits?|turnitin|moodle|session|einheit|registration|anmeldung|take place|stattfinden|held/i.test(
     text || ""
   );
 }
 
 function detectUserLanguage(text) {
   const t = (text || "").toLowerCase();
-  const de = /\b(prüfung|anwesenheit|abgabe|termin|uhrzeit|raum|bewertung|punkte|anmeldung|abmeldung)\b/.test(t);
+  const de = /\b(prüfung|anwesenheit|abgabe|termin|uhrzeit|raum|bewertung|punkte|anmeldung|abmeldung|wo|ort|stattfinden)\b/.test(
+    t
+  );
   return de ? "de" : "en";
 }
 
 function orgNeedsLiveCheck(text) {
-  // Schedule/rooms/registration are the typical “live” parts where u:find is authoritative.
   const t = (text || "").toLowerCase();
-  return /room|raum|where|wo\b|time|uhrzeit|date|termin|kickoff|first session|session 1|einheit 1|registration|anmeldung|deregistration|abmeldung|ufind|u:find/i.test(
+  return /room|raum|where|wo\b|location|ort|time|uhrzeit|date|termin|kickoff|first session|session 1|einheit 1|registration|anmeldung|deregistration|abmeldung|ufind|u:find|take place|stattfinden|held/i.test(
     t
   );
 }
 
 function contentNeedsLiveCheck(text) {
-  // Live-check for Uni/TIM factual questions (not for generic conceptual content).
   const t = (text || "").toLowerCase();
-  return /univie|universit|vienna|tim\b|chair|team|contact|office|room|registration|anmeldung|ufind|u:find|ects|credits/i.test(
+  return /univie|universit|vienna|tim\b|chair|holds the chair|who holds|professor|team|contact|office|room|location|registration|anmeldung|ufind|u:find|ects|credits/i.test(
     t
   );
 }
@@ -122,6 +120,7 @@ function safeUrl(url) {
   } catch {
     return { ok: false, reason: "Invalid URL" };
   }
+
   if (u.protocol !== "https:") return { ok: false, reason: "Only https allowed" };
 
   const host = u.hostname.toLowerCase();
@@ -190,8 +189,9 @@ function chunkText(text) {
 
   const chunks = [];
   for (const part of raw) {
-    if (part.length <= 1800) chunks.push(part);
-    else {
+    if (part.length <= 1800) {
+      chunks.push(part);
+    } else {
       for (let i = 0; i < part.length; i += 1600) {
         chunks.push(part.slice(i, i + 1800));
       }
@@ -201,9 +201,9 @@ function chunkText(text) {
 }
 
 function cosineSim(a, b) {
-  let dot = 0,
-    na = 0,
-    nb = 0;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
 
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];
@@ -217,16 +217,13 @@ function cosineSim(a, b) {
 // -------------------- Caches --------------------
 const syllabusCache = {
   index: { value: null, fetchedAt: 0 },
-  byUrl: new Map(), // url -> { value, fetchedAt }
+  byUrl: new Map(),
 };
 
-const syllabusVectorCache = new Map(); // syllabusUrl -> { chunks, vectors, fetchedAt }
-
+const syllabusVectorCache = new Map();
 const websitePagesIndexCache = { value: null, fetchedAt: 0 };
 const websiteVectorCache = new Map();
-
-// Web search cache
-const webSearchCache = new Map(); // key -> { value, fetchedAt }
+const webSearchCache = new Map();
 
 // -------------------- Syllabi index + syllabus text --------------------
 async function getSyllabiIndex() {
@@ -355,7 +352,7 @@ function getOfficialUrlsForCourse(pagesIndex, courseName, courseMeta) {
         if (p.course && String(p.course) !== String(courseName)) continue;
         if (typeof p.url === "string") urls.push({ url: p.url, title: p.title || "Official page" });
       }
-    } else if (pagesIndex && typeof pagesIndex === "object") {
+    } else if (typeof pagesIndex === "object") {
       const arr = pagesIndex[courseName];
       if (Array.isArray(arr)) {
         for (const p of arr) {
@@ -370,9 +367,8 @@ function getOfficialUrlsForCourse(pagesIndex, courseName, courseMeta) {
   const seen = new Set();
   const out = [];
   for (const u of urls) {
-    const key = u.url;
-    if (!seen.has(key)) {
-      seen.add(key);
+    if (!seen.has(u.url)) {
+      seen.add(u.url);
       out.push(u);
     }
   }
@@ -433,7 +429,6 @@ async function retrieveTopKWebsite(officialUrls, queryText, kTotal) {
 function tryDirectAnswerFromSyllabus(syllabusText, userText, language) {
   const t = (userText || "").toLowerCase();
 
-  // ECTS / credits
   if (/credits?|ects|sws/.test(t)) {
     const m =
       syllabusText.match(/ECTS\s*\/\s*SWS:\s*([0-9]+(?:[.,][0-9]+)?)\s*ECTS\s*\((\d+)\s*SWS\)/i) ||
@@ -444,7 +439,6 @@ function tryDirectAnswerFromSyllabus(syllabusText, userText, language) {
     }
   }
 
-  // First session (Session 1)
   if (/first session|session 1|erste.*(einheit|sitzung)|kickoff/i.test(userText || "")) {
     const s1 = syllabusText.match(/^\s*Session\s*1\s*:\s*(.+)$/mi);
     const defaultTime = syllabusText.match(/generally held from\s*([0-9]{2}:[0-9]{2})\s*[–-]\s*([0-9]{2}:[0-9]{2})/i);
@@ -465,7 +459,6 @@ function tryDirectAnswerFromSyllabus(syllabusText, userText, language) {
     }
   }
 
-  // Exam line
   if (/exam|prüfung/.test(t)) {
     const m = syllabusText.match(/^\s*Exam:\s*(.+)\s*$/mi) || syllabusText.match(/^\s*Prüfung:\s*(.+)\s*$/mi);
     if (m && m[1]) {
@@ -477,7 +470,6 @@ function tryDirectAnswerFromSyllabus(syllabusText, userText, language) {
     }
   }
 
-  // Attendance summary
   if (/attendance|anwesenheit|miss|fehl/.test(t)) {
     const section = syllabusText.split(/-{10,}\n/).find((s) => /ATTENDANCE RULES|ANWESENHEIT/i.test(s));
     if (section) {
@@ -503,7 +495,6 @@ function tryDirectAnswerFromSyllabus(syllabusText, userText, language) {
     }
   }
 
-  // Grading points
   if (/grading|bewertung|points|punkte|pass|bestehen/.test(t)) {
     const gp = syllabusText.match(/Group project\s*\(max\.\s*(\d+)\s*points\)/i);
     const ex = syllabusText.match(/In-class exam.*\(max\.\s*(\d+)\s*points\)/i);
@@ -725,7 +716,6 @@ async function callWebSearch({ userText, language, allowedDomains }) {
     },
     body: JSON.stringify({
       model: WEB_SEARCH_MODEL,
-      reasoning: { effort: "low" },
       tools: [
         {
           type: "web_search",
@@ -866,10 +856,13 @@ app.post("/api/chat", async (req, res) => {
       return res.status(400).json({ error: "messages must be an array" });
     }
 
-    const lastUser = [...messages].reverse().find((m) => m?.role === "user");
-    const lastUserText = (lastUser?.content || "").toString();
+    const userTurns = messages.filter((m) => m?.role === "user").map((m) => String(m.content || ""));
+    const lastUserText = userTurns[userTurns.length - 1] || "";
+    const recentUserContext = userTurns.slice(-3).join("\n");
+    const retrievalQueryText = recentUserContext || lastUserText;
+
     const language = detectUserLanguage(lastUserText);
-    const intent = classifyIntent(lastUserText);
+    const intent = classifyIntent(recentUserContext);
 
     // Runtime context (Europe/Vienna)
     const now = new Date();
@@ -910,9 +903,9 @@ app.post("/api/chat", async (req, res) => {
     // ---------- ORG PATH ----------
     if (intent === "org") {
       const indexObj = await getSyllabiIndex();
-      const detectedCourse = findCourseFromUserText(indexObj, lastUserText);
+      const detectedCourse = findCourseFromUserText(indexObj, recentUserContext);
 
-      const needsCourse = isLikelyCourseSpecific(lastUserText);
+      const needsCourse = isLikelyCourseSpecific(recentUserContext);
       const courseList = Object.keys(indexObj);
 
       if (!detectedCourse && needsCourse && courseList.length > 1) {
@@ -946,12 +939,12 @@ app.post("/api/chat", async (req, res) => {
       // Direct extraction (fast, deterministic)
       try {
         const syllabusTextForDirect = await getSyllabusText(syllabusUrl);
-        const direct = tryDirectAnswerFromSyllabus(syllabusTextForDirect, lastUserText, language);
+        const direct = tryDirectAnswerFromSyllabus(syllabusTextForDirect, retrievalQueryText, language);
 
         if (direct) {
-          if (USE_WEB_SEARCH && orgNeedsLiveCheck(lastUserText)) {
+          if (USE_WEB_SEARCH && orgNeedsLiveCheck(recentUserContext)) {
             const web = await callWebSearch({
-              userText: lastUserText,
+              userText: recentUserContext,
               language,
               allowedDomains: webSearchDomainsFor("org"),
             });
@@ -970,7 +963,7 @@ app.post("/api/chat", async (req, res) => {
       // Retrieval: syllabus
       let syllabusSources = [];
       try {
-        syllabusSources = await retrieveTopKSyllabus(syllabusUrl, lastUserText, ORG_TOPK_SYLLABUS);
+        syllabusSources = await retrieveTopKSyllabus(syllabusUrl, retrievalQueryText, ORG_TOPK_SYLLABUS);
       } catch (e) {
         console.error("Syllabus retrieval failed:", String(e?.message || e));
       }
@@ -980,7 +973,7 @@ app.post("/api/chat", async (req, res) => {
       try {
         const pagesIndex = await getOfficialPagesIndex();
         const officialUrls = getOfficialUrlsForCourse(pagesIndex, courseName, meta);
-        websiteSources = await retrieveTopKWebsite(officialUrls, lastUserText, ORG_TOPK_WEBSITE);
+        websiteSources = await retrieveTopKWebsite(officialUrls, retrievalQueryText, ORG_TOPK_WEBSITE);
       } catch (e) {
         console.error("Website retrieval failed:", String(e?.message || e));
       }
@@ -1000,11 +993,10 @@ app.post("/api/chat", async (req, res) => {
           `- Reply in the user’s language.\n`,
       };
 
-      // If no local sources at all, go straight to live web if enabled
       if (!sources || sources.length === 0) {
         if (USE_WEB_SEARCH) {
           const web = await callWebSearch({
-            userText: lastUserText,
+            userText: recentUserContext,
             language,
             allowedDomains: webSearchDomainsFor("org"),
           });
@@ -1028,20 +1020,19 @@ app.post("/api/chat", async (req, res) => {
 
       const groundedReply = enforceGroundingOrFallback(result, sources, language);
 
-      // Live double-check for org (prefer web for schedule/rooms/registration)
       const groundedOk =
         result?.can_answer_from_sources === true &&
         Array.isArray(result?.citations) &&
         result.citations.length > 0;
 
-      if (USE_WEB_SEARCH && (orgNeedsLiveCheck(lastUserText) || !groundedOk)) {
+      if (USE_WEB_SEARCH && (orgNeedsLiveCheck(recentUserContext) || !groundedOk)) {
         const web = await callWebSearch({
-          userText: lastUserText,
+          userText: recentUserContext,
           language,
           allowedDomains: webSearchDomainsFor("org"),
         });
 
-        if (web?.ok && web.text && orgNeedsLiveCheck(lastUserText)) {
+        if (web?.ok && web.text && orgNeedsLiveCheck(recentUserContext)) {
           return res.json({ reply: formatWebAnswer(web.text, web.citations || []) });
         }
       }
@@ -1064,11 +1055,11 @@ app.post("/api/chat", async (req, res) => {
     const outbound = [runtimeContextMessage, systemMessage, ...messages];
     const contentReply = await callContentLLM(outbound);
 
-    if (USE_WEB_SEARCH && contentNeedsLiveCheck(lastUserText)) {
+    if (USE_WEB_SEARCH && contentNeedsLiveCheck(recentUserContext)) {
       console.log("WEB SEARCH TRIGGERED:", lastUserText);
 
       const web = await callWebSearch({
-        userText: lastUserText,
+        userText: recentUserContext,
         language,
         allowedDomains: webSearchDomainsFor("content"),
       });
@@ -1077,8 +1068,12 @@ app.post("/api/chat", async (req, res) => {
         return res.json({ reply: formatWebAnswer(web.text, web.citations || []) });
       }
 
-      // Fallback to the normal model answer instead of hard-failing
-      return res.json({ reply: contentReply });
+      return res.json({
+        reply:
+          language === "de"
+            ? "Ich konnte dazu keine verlässliche Information auf den offiziellen Uni-Wien/TIM-Seiten abrufen."
+            : "I could not retrieve reliable information for that from the official Uni Wien/TIM pages.",
+      });
     }
 
     return res.json({ reply: contentReply });
