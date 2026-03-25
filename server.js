@@ -43,7 +43,7 @@ const RETURN_CITATIONS = String(process.env.RETURN_CITATIONS || "false") === "tr
 
 // Web search (Responses API)
 const USE_WEB_SEARCH = String(process.env.USE_WEB_SEARCH || "false") === "true";
-const WEB_SEARCH_MODEL = process.env.WEB_SEARCH_MODEL || "gpt-5"; // must support web_search tool
+const WEB_SEARCH_MODEL = process.env.WEB_SEARCH_MODEL || "gpt-4.1";
 const WEB_SEARCH_CACHE_TTL_MS = Number(process.env.WEB_SEARCH_CACHE_TTL_MS || 5 * 60 * 1000);
 const RETURN_WEB_CITATIONS = String(process.env.RETURN_WEB_CITATIONS || "false") === "true";
 const WEB_SEARCH_MAX_DOMAINS = Number(process.env.WEB_SEARCH_MAX_DOMAINS || 10);
@@ -110,7 +110,6 @@ function contentNeedsLiveCheck(text) {
 }
 
 function webSearchDomainsFor(mode) {
-  // Keep this tight; broaden only if necessary.
   const base = ["tim.univie.ac.at", "univie.ac.at", "ufind.univie.ac.at"];
   if (mode === "org") return base;
   return base;
@@ -152,7 +151,6 @@ async function fetchText(url) {
   const resp = await fetchWithTimeout(url, {
     method: "GET",
     headers: {
-      // Helps with some intermediary caches; harmless otherwise.
       "Cache-Control": "no-cache",
       Pragma: "no-cache",
     },
@@ -185,12 +183,18 @@ function htmlToText(html) {
 }
 
 function chunkText(text) {
-  const raw = (text || "").split(/-{10,}\n/).map((s) => s.trim()).filter(Boolean);
+  const raw = (text || "")
+    .split(/-{10,}\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
   const chunks = [];
   for (const part of raw) {
     if (part.length <= 1800) chunks.push(part);
     else {
-      for (let i = 0; i < part.length; i += 1600) chunks.push(part.slice(i, i + 1800));
+      for (let i = 0; i < part.length; i += 1600) {
+        chunks.push(part.slice(i, i + 1800));
+      }
     }
   }
   return chunks;
@@ -200,11 +204,13 @@ function cosineSim(a, b) {
   let dot = 0,
     na = 0,
     nb = 0;
+
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];
     na += a[i] * a[i];
     nb += b[i] * b[i];
   }
+
   return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-12);
 }
 
@@ -249,6 +255,7 @@ async function getSyllabusText(url) {
 
 function findCourseFromUserText(indexObj, userText) {
   const t = (userText || "").toLowerCase();
+
   for (const [courseName, meta] of Object.entries(indexObj)) {
     const aliases = [courseName, ...(meta.aliases || [])]
       .map((s) => String(s).toLowerCase())
@@ -256,6 +263,7 @@ function findCourseFromUserText(indexObj, userText) {
 
     if (aliases.some((a) => t.includes(a))) return courseName;
   }
+
   return null;
 }
 
@@ -335,7 +343,9 @@ function getOfficialUrlsForCourse(pagesIndex, courseName, courseMeta) {
   const urls = [];
 
   if (courseMeta && Array.isArray(courseMeta.official_urls)) {
-    for (const u of courseMeta.official_urls) if (typeof u === "string") urls.push({ url: u, title: "Official page" });
+    for (const u of courseMeta.official_urls) {
+      if (typeof u === "string") urls.push({ url: u, title: "Official page" });
+    }
   }
 
   if (pagesIndex) {
@@ -349,7 +359,9 @@ function getOfficialUrlsForCourse(pagesIndex, courseName, courseMeta) {
       const arr = pagesIndex[courseName];
       if (Array.isArray(arr)) {
         for (const p of arr) {
-          if (p && typeof p.url === "string") urls.push({ url: p.url, title: p.title || "Official page" });
+          if (p && typeof p.url === "string") {
+            urls.push({ url: p.url, title: p.title || "Official page" });
+          }
         }
       }
     }
@@ -364,6 +376,7 @@ function getOfficialUrlsForCourse(pagesIndex, courseName, courseMeta) {
       out.push(u);
     }
   }
+
   return out;
 }
 
@@ -590,6 +603,7 @@ async function callOrgLLMJson({ system, runtime, userText, sources, language }) 
 
   const data = await resp.json();
   const raw = data.choices?.[0]?.message?.content ?? "";
+
   try {
     return JSON.parse(raw);
   } catch {
@@ -620,9 +634,24 @@ function enforceGroundingOrFallback(result, sources, language) {
 }
 
 // -------------------- Web search (Responses API) --------------------
+function dedupeWebRefs(refs) {
+  const seen = new Set();
+  const out = [];
+
+  for (const r of refs || []) {
+    const url = r?.url;
+    if (!url) continue;
+    if (seen.has(url)) continue;
+    seen.add(url);
+    out.push({ url, title: r.title || url });
+  }
+
+  return out;
+}
+
 function extractWebCitationsFromResponses(respJson) {
-  // Extract url_citation annotations from output message content.
   const cites = [];
+
   for (const item of respJson?.output || []) {
     if (item?.type === "message" && Array.isArray(item.content)) {
       for (const part of item.content) {
@@ -636,28 +665,42 @@ function extractWebCitationsFromResponses(respJson) {
       }
     }
   }
-  // de-dup
-  const seen = new Set();
-  const out = [];
-  for (const c of cites) {
-    const key = c.url;
-    if (!seen.has(key)) {
-      seen.add(key);
-      out.push(c);
+
+  return dedupeWebRefs(cites);
+}
+
+function extractWebSourcesFromResponses(respJson) {
+  const refs = [];
+
+  for (const item of respJson?.output || []) {
+    if (item?.type === "web_search_call") {
+      const sources = item?.action?.sources || item?.sources || [];
+      if (Array.isArray(sources)) {
+        for (const s of sources) {
+          const url = s?.url || s?.link;
+          const title = s?.title || s?.name || url;
+          if (url) refs.push({ url, title });
+        }
+      }
     }
   }
-  return out;
+
+  return dedupeWebRefs(refs);
 }
 
 function extractResponsesOutputText(respJson) {
   const out = [];
+
   for (const item of respJson?.output || []) {
     if (item?.type === "message" && Array.isArray(item.content)) {
       for (const c of item.content) {
-        if (c?.type === "output_text" && typeof c.text === "string") out.push(c.text);
+        if (c?.type === "output_text" && typeof c.text === "string") {
+          out.push(c.text);
+        }
       }
     }
   }
+
   return out.join("\n").trim();
 }
 
@@ -670,7 +713,9 @@ async function callWebSearch({ userText, language, allowedDomains }) {
   const cacheKey = JSON.stringify({ userText, language, domains });
   const now = Date.now();
   const cached = webSearchCache.get(cacheKey);
-  if (cached && now - cached.fetchedAt < WEB_SEARCH_CACHE_TTL_MS) return cached.value;
+  if (cached && now - cached.fetchedAt < WEB_SEARCH_CACHE_TTL_MS) {
+    return cached.value;
+  }
 
   const resp = await fetchWithTimeout("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -705,19 +750,30 @@ async function callWebSearch({ userText, language, allowedDomains }) {
     }),
   });
 
+  const requestId = resp.headers.get("x-request-id");
+
   if (!resp.ok) {
     const text = await resp.text();
-    console.error("Responses web_search error:", resp.status, text);
+    console.error("Responses web_search error:", {
+      status: resp.status,
+      requestId,
+      body: text,
+      model: WEB_SEARCH_MODEL,
+      domains,
+    });
     return { ok: false, text: "", citations: [] };
   }
 
   const data = await resp.json();
   const text = extractResponsesOutputText(data);
-  const citations = extractWebCitationsFromResponses(data);
+  const citations = dedupeWebRefs([
+    ...extractWebCitationsFromResponses(data),
+    ...extractWebSourcesFromResponses(data),
+  ]);
 
   const value = { ok: Boolean(text), text, citations };
   webSearchCache.set(cacheKey, { value, fetchedAt: now });
-  return value.value;
+  return value;
 }
 
 function formatWebAnswer(text, citations) {
@@ -730,7 +786,6 @@ function formatWebAnswer(text, citations) {
   const unique = [...new Set(urls)].slice(0, 5);
   if (unique.length === 0) return clean;
 
-  // Plain URLs so they are clickable in most UIs
   return `${clean}\n\nWeb sources:\n- ${unique.join("\n- ")}`;
 }
 
@@ -768,6 +823,7 @@ app.get("/health", (_req, res) => res.send("ok"));
 
 app.get("/debug/time", (_req, res) => {
   const now = new Date();
+
   const viennaDate = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Europe/Vienna",
     year: "numeric",
@@ -806,7 +862,9 @@ app.get("/debug/official-pages-index", async (_req, res) => {
 app.post("/api/chat", async (req, res) => {
   try {
     const { messages } = req.body;
-    if (!Array.isArray(messages)) return res.status(400).json({ error: "messages must be an array" });
+    if (!Array.isArray(messages)) {
+      return res.status(400).json({ error: "messages must be an array" });
+    }
 
     const lastUser = [...messages].reverse().find((m) => m?.role === "user");
     const lastUserText = (lastUser?.content || "").toString();
@@ -849,7 +907,7 @@ app.post("/api/chat", async (req, res) => {
         `- Reply in the same language as the user.\n`,
     };
 
-    // ---------- ORG PATH (grounded + enforced + optional live web double-check) ----------
+    // ---------- ORG PATH ----------
     if (intent === "org") {
       const indexObj = await getSyllabiIndex();
       const detectedCourse = findCourseFromUserText(indexObj, lastUserText);
@@ -889,19 +947,20 @@ app.post("/api/chat", async (req, res) => {
       try {
         const syllabusTextForDirect = await getSyllabusText(syllabusUrl);
         const direct = tryDirectAnswerFromSyllabus(syllabusTextForDirect, lastUserText, language);
+
         if (direct) {
-          // Optional live check for schedule/rooms/registration questions
           if (USE_WEB_SEARCH && orgNeedsLiveCheck(lastUserText)) {
             const web = await callWebSearch({
               userText: lastUserText,
               language,
               allowedDomains: webSearchDomainsFor("org"),
             });
-            // If web search returns something useful, prefer it for live facts (rooms/times)
-            if (web?.ok && web.text && web.citations?.length) {
-              return res.json({ reply: formatWebAnswer(web.text, web.citations) });
+
+            if (web?.ok && web.text) {
+              return res.json({ reply: formatWebAnswer(web.text, web.citations || []) });
             }
           }
+
           return res.json({ reply: direct });
         }
       } catch (e) {
@@ -949,9 +1008,14 @@ app.post("/api/chat", async (req, res) => {
             language,
             allowedDomains: webSearchDomainsFor("org"),
           });
-          if (web?.ok && web.text) return res.json({ reply: formatWebAnswer(web.text, web.citations) });
+          if (web?.ok && web.text) {
+            return res.json({ reply: formatWebAnswer(web.text, web.citations || []) });
+          }
         }
-        return res.json({ reply: enforceGroundingOrFallback({ can_answer_from_sources: false }, [], language) });
+
+        return res.json({
+          reply: enforceGroundingOrFallback({ can_answer_from_sources: false }, [], language),
+        });
       }
 
       const result = await callOrgLLMJson({
@@ -965,7 +1029,10 @@ app.post("/api/chat", async (req, res) => {
       const groundedReply = enforceGroundingOrFallback(result, sources, language);
 
       // Live double-check for org (prefer web for schedule/rooms/registration)
-      const groundedOk = result?.can_answer_from_sources === true && Array.isArray(result?.citations) && result.citations.length > 0;
+      const groundedOk =
+        result?.can_answer_from_sources === true &&
+        Array.isArray(result?.citations) &&
+        result.citations.length > 0;
 
       if (USE_WEB_SEARCH && (orgNeedsLiveCheck(lastUserText) || !groundedOk)) {
         const web = await callWebSearch({
@@ -974,23 +1041,15 @@ app.post("/api/chat", async (req, res) => {
           allowedDomains: webSearchDomainsFor("org"),
         });
 
-        // If web provides something, prefer it only for “live” questions; otherwise keep grounded.
-        if (web?.ok && web.text && web.citations?.length) {
-          if (orgNeedsLiveCheck(lastUserText)) {
-            return res.json({ reply: formatWebAnswer(web.text, web.citations) });
-          }
-          // Not a “live” question: keep syllabus-grounded reply.
-          // Optionally append sources in debug mode.
-          if (RETURN_WEB_CITATIONS) {
-            return res.json({ reply: `${groundedReply}\n\n(See also official pages)\n${formatWebAnswer("", web.citations)}` });
-          }
+        if (web?.ok && web.text && orgNeedsLiveCheck(lastUserText)) {
+          return res.json({ reply: formatWebAnswer(web.text, web.citations || []) });
         }
       }
 
       return res.json({ reply: groundedReply });
     }
 
-    // ---------- CONTENT PATH (normal answer + optional web double-check for Uni/TIM factual content) ----------
+    // ---------- CONTENT PATH ----------
     const systemMessage = {
       role: "system",
       content:
@@ -1005,26 +1064,22 @@ app.post("/api/chat", async (req, res) => {
     const outbound = [runtimeContextMessage, systemMessage, ...messages];
     const contentReply = await callContentLLM(outbound);
 
-if (USE_WEB_SEARCH && contentNeedsLiveCheck(lastUserText)) {
-  console.log("WEB SEARCH TRIGGERED:", lastuserText);
-  const web = await callWebSearch({
-    userText: lastUserText,
-    language,
-    allowedDomains: webSearchDomainsFor("content"),
-  });
+    if (USE_WEB_SEARCH && contentNeedsLiveCheck(lastUserText)) {
+      console.log("WEB SEARCH TRIGGERED:", lastUserText);
 
-  if (web?.ok && web.text && web.citations?.length) {
-    return res.json({ reply: formatWebAnswer(web.text, web.citations) });
-  }
+      const web = await callWebSearch({
+        userText: lastUserText,
+        language,
+        allowedDomains: webSearchDomainsFor("content"),
+      });
 
-  // HARD FAIL instead of hallucinating
-  return res.json({
-    reply:
-      language === "de"
-        ? "Ich konnte dazu keine verlässliche Information auf den offiziellen Uni-Wien/TIM-Seiten finden. Bitte prüfe die TIM-Webseite oder u:find."
-        : "I could not find reliable information on the official Uni Wien/TIM pages. Please check the TIM website or u:find.",
-  });
-}
+      if (web?.ok && web.text) {
+        return res.json({ reply: formatWebAnswer(web.text, web.citations || []) });
+      }
+
+      // Fallback to the normal model answer instead of hard-failing
+      return res.json({ reply: contentReply });
+    }
 
     return res.json({ reply: contentReply });
   } catch (err) {
