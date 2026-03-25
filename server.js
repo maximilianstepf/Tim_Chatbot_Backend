@@ -73,21 +73,21 @@ function univieSemesterLabel(dateObj) {
 function classifyIntent(text) {
   const t = (text || "").toLowerCase();
   const org =
-    /exam|prüfung|deadline|due|abgabe|grading|bewertung|points|punkte|attendance|anwesenheit|room|raum|where|wo\b|location|ort|when|wann|time|uhrzeit|date|termin|moodle|turnitin|plagiarism|ects|sws|credits?|session|einheit|class|lecture|registration|anmeldung|deregistration|abmeldung|take place|stattfinden|held/i.test(
+    /exam|prüfung|deadline|due|abgabe|grading|bewertung|points|punkte|attendance|anwesenheit|room|raum|where|wo\b|location|ort|when|wann|time|uhrzeit|date|termin|moodle|turnitin|plagiarism|ects|sws|credits?|session|einheit|class|lecture|registration|anmeldung|deregistration|abmeldung|take place|stattfinden|held|building|gebäude|address|adresse|topic|thema/i.test(
       t
     );
   return org ? "org" : "content";
 }
 
 function isLikelyCourseSpecific(text) {
-  return /prüfung|exam|deadline|abgabe|due|grading|bewertung|attendance|anwesenheit|room|raum|where|wo\b|location|ort|when|wann|termin|date|uhrzeit|time|ects|sws|credits?|turnitin|moodle|session|einheit|class|lecture|registration|anmeldung|take place|stattfinden|held/i.test(
+  return /prüfung|exam|deadline|abgabe|due|grading|bewertung|attendance|anwesenheit|room|raum|where|wo\b|location|ort|when|wann|termin|date|uhrzeit|time|ects|sws|credits?|turnitin|moodle|session|einheit|class|lecture|registration|anmeldung|take place|stattfinden|held|building|gebäude|address|adresse|topic|thema/i.test(
     text || ""
   );
 }
 
 function detectUserLanguage(text) {
   const t = (text || "").toLowerCase();
-  const de = /\b(prüfung|anwesenheit|abgabe|termin|uhrzeit|raum|bewertung|punkte|anmeldung|abmeldung|wo|ort|stattfinden|wann)\b/.test(
+  const de = /\b(prüfung|anwesenheit|abgabe|termin|uhrzeit|raum|bewertung|punkte|anmeldung|abmeldung|wo|ort|stattfinden|wann|gebäude|adresse|thema)\b/.test(
     t
   );
   return de ? "de" : "en";
@@ -95,7 +95,7 @@ function detectUserLanguage(text) {
 
 function orgNeedsLiveCheck(text) {
   const t = (text || "").toLowerCase();
-  return /room|raum|where|wo\b|location|ort|when|wann|time|uhrzeit|date|termin|kickoff|first session|session 1|einheit 1|registration|anmeldung|deregistration|abmeldung|ufind|u:find|take place|stattfinden|held/i.test(
+  return /room|raum|where|wo\b|location|ort|when|wann|time|uhrzeit|date|termin|kickoff|first session|session 1|einheit 1|registration|anmeldung|deregistration|abmeldung|ufind|u:find|take place|stattfinden|held|building|gebäude|address|adresse/i.test(
     t
   );
 }
@@ -110,8 +110,14 @@ function contentNeedsLiveCheck(text) {
 function isEllipticalFollowUp(text) {
   const t = (text || "").trim().toLowerCase();
   if (!t) return false;
-  if (t.split(/\s+/).length <= 6) return true;
-  return /^(where|when|what|who|which|how|wo|wann|was|wer|welche|und|and|there|it|they|dort|dann)\b/.test(t);
+
+  if (/^(where|when|what topic|what time|which room|which building|and what|and where|and when)\b/.test(t)) return true;
+  if (/^(wo|wann|welcher raum|welches gebäude|und was|und wo|und wann)\b/.test(t)) return true;
+
+  if (/\b(it|they|there|that class|that session|the next class|the next session|tomorrow'?s session)\b/.test(t)) return true;
+  if (/\b(sie|dort|diese einheit|die nächste einheit|die nächste stunde|morgige einheit)\b/.test(t)) return true;
+
+  return false;
 }
 
 function webSearchDomainsFor(mode) {
@@ -241,6 +247,34 @@ function normalizeWebAnswer(text) {
   }
 
   return s;
+}
+
+function findLastMentionedCourse(indexObj, userTurns) {
+  for (let i = userTurns.length - 2; i >= 0; i--) {
+    const found = findCourseFromUserText(indexObj, userTurns[i]);
+    if (found) return found;
+  }
+  return null;
+}
+
+function resolveQuestionForCourse(lastUserText, courseName) {
+  if (!courseName) return lastUserText;
+  const t = (lastUserText || "").trim();
+
+  if (/^where\b|^wo\b/i.test(t)) {
+    return `Where will the next class of ${courseName} take place?`;
+  }
+  if (/^when\b|^wann\b/i.test(t)) {
+    return `When is the next class of ${courseName}?`;
+  }
+  if (/topic|what will be the topic|what is the topic|thema/i.test(t)) {
+    return `What is the topic of the next class of ${courseName}?`;
+  }
+  if (/building|address|gebäude|adresse/i.test(t)) {
+    return `Which building is the next class of ${courseName} held in, and what is the address?`;
+  }
+
+  return lastUserText;
 }
 
 // -------------------- Caches --------------------
@@ -897,16 +931,13 @@ app.post("/api/chat", async (req, res) => {
 
     const userTurns = messages.filter((m) => m?.role === "user").map((m) => String(m.content || ""));
     const lastUserText = userTurns[userTurns.length - 1] || "";
-    const recentUserContext = userTurns.slice(-3).join("\n");
-
-    const useContext = isEllipticalFollowUp(lastUserText);
-    const routingText = useContext ? recentUserContext : lastUserText;
-    const retrievalQueryText = useContext ? recentUserContext : lastUserText;
-
     const language = detectUserLanguage(lastUserText);
-    const intent = classifyIntent(routingText);
-    const liveOrg = orgNeedsLiveCheck(routingText);
-    const liveContent = contentNeedsLiveCheck(routingText);
+
+    // Routing must use only the current turn.
+    const intent = classifyIntent(lastUserText);
+    const liveOrg = orgNeedsLiveCheck(lastUserText);
+    const liveContent = contentNeedsLiveCheck(lastUserText);
+    const useContext = isEllipticalFollowUp(lastUserText);
 
     // Runtime context (Europe/Vienna)
     const now = new Date();
@@ -947,12 +978,15 @@ app.post("/api/chat", async (req, res) => {
     // ---------- ORG PATH ----------
     if (intent === "org") {
       const indexObj = await getSyllabiIndex();
-      const detectedCourse = findCourseFromUserText(indexObj, retrievalQueryText);
-
-      const needsCourse = isLikelyCourseSpecific(routingText);
       const courseList = Object.keys(indexObj);
 
-      if (!detectedCourse && needsCourse && courseList.length > 1) {
+      const detectedCourse = findCourseFromUserText(indexObj, lastUserText);
+      const previousCourse = useContext ? findLastMentionedCourse(indexObj, userTurns) : null;
+      const needsCourse = isLikelyCourseSpecific(lastUserText);
+
+      const courseName = detectedCourse || previousCourse || (courseList.length === 1 ? courseList[0] : null);
+
+      if (!courseName && needsCourse && courseList.length > 1) {
         return res.json({
           reply:
             language === "de"
@@ -961,7 +995,6 @@ app.post("/api/chat", async (req, res) => {
         });
       }
 
-      const courseName = detectedCourse || (courseList.length === 1 ? courseList[0] : null);
       if (!courseName) {
         return res.json({
           reply:
@@ -970,6 +1003,13 @@ app.post("/api/chat", async (req, res) => {
               : "Please specify the exact TIM course title so I can use the correct syllabus.",
         });
       }
+
+      const retrievalQueryText =
+        useContext && previousCourse
+          ? resolveQuestionForCourse(lastUserText, courseName)
+          : useContext && detectedCourse
+            ? resolveQuestionForCourse(lastUserText, courseName)
+            : lastUserText;
 
       const meta = indexObj[courseName] || {};
       const syllabusUrl = meta.syllabus_url;
@@ -1019,6 +1059,7 @@ app.post("/api/chat", async (req, res) => {
           `Task type: ORGANIZATIONAL.\n\n` +
           `Hard rules:\n` +
           `- Use ONLY the provided Sources to answer.\n` +
+          `- Answer ONLY the current question.\n` +
           `- If the Sources do not contain the answer, set can_answer_from_sources=false.\n` +
           `- If you can answer: answer in 1–2 short sentences and include citations (SOURCE IDs) in the JSON.\n` +
           `- Never invent dates, rules, rooms, deadlines, points, topics, or requirements.\n` +
@@ -1088,7 +1129,7 @@ app.post("/api/chat", async (req, res) => {
       console.log("WEB SEARCH TRIGGERED:", lastUserText);
 
       const web = await callWebSearch({
-        userText: retrievalQueryText,
+        userText: lastUserText,
         language,
         allowedDomains: webSearchDomainsFor("content"),
       });
