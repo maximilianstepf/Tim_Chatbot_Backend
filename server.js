@@ -73,21 +73,21 @@ function univieSemesterLabel(dateObj) {
 function classifyIntent(text) {
   const t = (text || "").toLowerCase();
   const org =
-    /exam|prüfung|deadline|due|abgabe|grading|bewertung|points|punkte|attendance|anwesenheit|room|raum|where|wo\b|location|ort|time|uhrzeit|date|termin|moodle|turnitin|plagiarism|ects|sws|credits?|session|einheit|registration|anmeldung|deregistration|abmeldung|take place|stattfinden|held/i.test(
+    /exam|prüfung|deadline|due|abgabe|grading|bewertung|points|punkte|attendance|anwesenheit|room|raum|where|wo\b|location|ort|when|wann|time|uhrzeit|date|termin|moodle|turnitin|plagiarism|ects|sws|credits?|session|einheit|class|lecture|registration|anmeldung|deregistration|abmeldung|take place|stattfinden|held/i.test(
       t
     );
   return org ? "org" : "content";
 }
 
 function isLikelyCourseSpecific(text) {
-  return /prüfung|exam|deadline|abgabe|due|grading|bewertung|attendance|anwesenheit|room|raum|where|wo\b|location|ort|termin|date|uhrzeit|time|ects|sws|credits?|turnitin|moodle|session|einheit|registration|anmeldung|take place|stattfinden|held/i.test(
+  return /prüfung|exam|deadline|abgabe|due|grading|bewertung|attendance|anwesenheit|room|raum|where|wo\b|location|ort|when|wann|termin|date|uhrzeit|time|ects|sws|credits?|turnitin|moodle|session|einheit|class|lecture|registration|anmeldung|take place|stattfinden|held/i.test(
     text || ""
   );
 }
 
 function detectUserLanguage(text) {
   const t = (text || "").toLowerCase();
-  const de = /\b(prüfung|anwesenheit|abgabe|termin|uhrzeit|raum|bewertung|punkte|anmeldung|abmeldung|wo|ort|stattfinden)\b/.test(
+  const de = /\b(prüfung|anwesenheit|abgabe|termin|uhrzeit|raum|bewertung|punkte|anmeldung|abmeldung|wo|ort|stattfinden|wann)\b/.test(
     t
   );
   return de ? "de" : "en";
@@ -95,16 +95,23 @@ function detectUserLanguage(text) {
 
 function orgNeedsLiveCheck(text) {
   const t = (text || "").toLowerCase();
-  return /room|raum|where|wo\b|location|ort|time|uhrzeit|date|termin|kickoff|first session|session 1|einheit 1|registration|anmeldung|deregistration|abmeldung|ufind|u:find|take place|stattfinden|held/i.test(
+  return /room|raum|where|wo\b|location|ort|when|wann|time|uhrzeit|date|termin|kickoff|first session|session 1|einheit 1|registration|anmeldung|deregistration|abmeldung|ufind|u:find|take place|stattfinden|held/i.test(
     t
   );
 }
 
 function contentNeedsLiveCheck(text) {
   const t = (text || "").toLowerCase();
-  return /univie|universit|vienna|tim\b|chair|holds the chair|who holds|professor|team|contact|office|room|location|registration|anmeldung|ufind|u:find|ects|credits/i.test(
+  return /univie|universit|vienna|tim\b|chair|holds the chair|who holds|professor|team|contact|office|registration|anmeldung|ufind|u:find/i.test(
     t
   );
+}
+
+function isEllipticalFollowUp(text) {
+  const t = (text || "").trim().toLowerCase();
+  if (!t) return false;
+  if (t.split(/\s+/).length <= 6) return true;
+  return /^(where|when|what|who|which|how|wo|wann|was|wer|welche|und|and|there|it|they|dort|dann)\b/.test(t);
 }
 
 function webSearchDomainsFor(mode) {
@@ -212,6 +219,28 @@ function cosineSim(a, b) {
   }
 
   return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-12);
+}
+
+function normalizeWebAnswer(text) {
+  let s = String(text || "").trim();
+
+  if (!s) return "";
+  if (s === "NOT_FOUND") return "NOT_FOUND";
+
+  s = s.replace(/\r/g, "");
+  s = s.replace(/\n+/g, " ");
+  s = s.replace(/^\s*here is the requested information.*?:\s*/i, "");
+  s = s.replace(/^\s*according to .*?,\s*/i, "");
+  s = s.replace(/\s*let me know if you.*$/i, "");
+  s = s.replace(/\s*if you need further details.*$/i, "");
+  s = s.replace(/\s{2,}/g, " ").trim();
+
+  const sentences = s.match(/[^.!?]+[.!?]+/g);
+  if (sentences && sentences.length > 2) {
+    s = sentences.slice(0, 2).join(" ").trim();
+  }
+
+  return s;
 }
 
 // -------------------- Caches --------------------
@@ -696,7 +725,7 @@ function extractResponsesOutputText(respJson) {
 }
 
 async function callWebSearch({ userText, language, allowedDomains }) {
-  if (!USE_WEB_SEARCH) return { ok: false, text: "", citations: [] };
+  if (!USE_WEB_SEARCH) return { ok: false, found: false, text: "", citations: [] };
   if (!OPENAI_API_KEY) throw new Error("Missing OPENAI_API_KEY");
 
   const domains = (allowedDomains || []).slice(0, WEB_SEARCH_MAX_DOMAINS);
@@ -734,9 +763,11 @@ async function callWebSearch({ userText, language, allowedDomains }) {
       input:
         `Answer in ${language === "de" ? "German" : "English"}.\n` +
         `Use ONLY information from the allowed domains.\n` +
-        `If you cannot find the answer on those domains, say so briefly.\n\n` +
+        `Return only the answer itself in 1 short sentence, maximum 2 sentences.\n` +
+        `No intro. No explanation. No bullets. No recap. No follow-up offer. Do not mention sources or domains in the answer body.\n` +
+        `If the answer is not clearly available on the allowed domains, return exactly: NOT_FOUND\n\n` +
         `Question:\n${userText}`,
-      max_output_tokens: 700,
+      max_output_tokens: 180,
     }),
   });
 
@@ -751,17 +782,25 @@ async function callWebSearch({ userText, language, allowedDomains }) {
       model: WEB_SEARCH_MODEL,
       domains,
     });
-    return { ok: false, text: "", citations: [] };
+    return { ok: false, found: false, text: "", citations: [] };
   }
 
   const data = await resp.json();
-  const text = extractResponsesOutputText(data);
+  const rawText = extractResponsesOutputText(data);
+  const normalizedText = normalizeWebAnswer(rawText);
   const citations = dedupeWebRefs([
     ...extractWebCitationsFromResponses(data),
     ...extractWebSourcesFromResponses(data),
   ]);
 
-  const value = { ok: Boolean(text), text, citations };
+  const found = Boolean(normalizedText) && normalizedText !== "NOT_FOUND";
+  const value = {
+    ok: true,
+    found,
+    text: found ? normalizedText : "",
+    citations,
+  };
+
   webSearchCache.set(cacheKey, { value, fetchedAt: now });
   return value;
 }
@@ -859,10 +898,15 @@ app.post("/api/chat", async (req, res) => {
     const userTurns = messages.filter((m) => m?.role === "user").map((m) => String(m.content || ""));
     const lastUserText = userTurns[userTurns.length - 1] || "";
     const recentUserContext = userTurns.slice(-3).join("\n");
-    const retrievalQueryText = recentUserContext || lastUserText;
+
+    const useContext = isEllipticalFollowUp(lastUserText);
+    const routingText = useContext ? recentUserContext : lastUserText;
+    const retrievalQueryText = useContext ? recentUserContext : lastUserText;
 
     const language = detectUserLanguage(lastUserText);
-    const intent = classifyIntent(recentUserContext);
+    const intent = classifyIntent(routingText);
+    const liveOrg = orgNeedsLiveCheck(routingText);
+    const liveContent = contentNeedsLiveCheck(routingText);
 
     // Runtime context (Europe/Vienna)
     const now = new Date();
@@ -903,9 +947,9 @@ app.post("/api/chat", async (req, res) => {
     // ---------- ORG PATH ----------
     if (intent === "org") {
       const indexObj = await getSyllabiIndex();
-      const detectedCourse = findCourseFromUserText(indexObj, recentUserContext);
+      const detectedCourse = findCourseFromUserText(indexObj, retrievalQueryText);
 
-      const needsCourse = isLikelyCourseSpecific(recentUserContext);
+      const needsCourse = isLikelyCourseSpecific(routingText);
       const courseList = Object.keys(indexObj);
 
       if (!detectedCourse && needsCourse && courseList.length > 1) {
@@ -942,18 +986,6 @@ app.post("/api/chat", async (req, res) => {
         const direct = tryDirectAnswerFromSyllabus(syllabusTextForDirect, retrievalQueryText, language);
 
         if (direct) {
-          if (USE_WEB_SEARCH && orgNeedsLiveCheck(recentUserContext)) {
-            const web = await callWebSearch({
-              userText: recentUserContext,
-              language,
-              allowedDomains: webSearchDomainsFor("org"),
-            });
-
-            if (web?.ok && web.text) {
-              return res.json({ reply: formatWebAnswer(web.text, web.citations || []) });
-            }
-          }
-
           return res.json({ reply: direct });
         }
       } catch (e) {
@@ -989,18 +1021,20 @@ app.post("/api/chat", async (req, res) => {
           `- Use ONLY the provided Sources to answer.\n` +
           `- If the Sources do not contain the answer, set can_answer_from_sources=false.\n` +
           `- If you can answer: answer in 1–2 short sentences and include citations (SOURCE IDs) in the JSON.\n` +
-          `- Never invent dates, rules, rooms, deadlines, points, or requirements.\n` +
+          `- Never invent dates, rules, rooms, deadlines, points, topics, or requirements.\n` +
+          `- Prefer syllabus/official snapshot sources over live web search.\n` +
           `- Reply in the user’s language.\n`,
       };
 
       if (!sources || sources.length === 0) {
-        if (USE_WEB_SEARCH) {
+        if (USE_WEB_SEARCH && liveOrg) {
           const web = await callWebSearch({
-            userText: recentUserContext,
+            userText: retrievalQueryText,
             language,
             allowedDomains: webSearchDomainsFor("org"),
           });
-          if (web?.ok && web.text) {
+
+          if (web?.ok && web.found && web.text) {
             return res.json({ reply: formatWebAnswer(web.text, web.citations || []) });
           }
         }
@@ -1013,7 +1047,7 @@ app.post("/api/chat", async (req, res) => {
       const result = await callOrgLLMJson({
         system: orgSystemMessage.content,
         runtime: runtimeContextMessage.content,
-        userText: lastUserText,
+        userText: retrievalQueryText,
         sources,
         language,
       });
@@ -1023,16 +1057,24 @@ app.post("/api/chat", async (req, res) => {
       const groundedOk =
         result?.can_answer_from_sources === true &&
         Array.isArray(result?.citations) &&
-        result.citations.length > 0;
+        result.citations.length > 0 &&
+        typeof result?.answer === "string" &&
+        result.answer.trim().length > 0;
 
-      if (USE_WEB_SEARCH && (orgNeedsLiveCheck(recentUserContext) || !groundedOk)) {
+      // Syllabus/website-grounded answer always wins if available.
+      if (groundedOk) {
+        return res.json({ reply: groundedReply });
+      }
+
+      // Only fall back to live web for genuinely live org facts that local sources could not answer.
+      if (USE_WEB_SEARCH && liveOrg) {
         const web = await callWebSearch({
-          userText: recentUserContext,
+          userText: retrievalQueryText,
           language,
           allowedDomains: webSearchDomainsFor("org"),
         });
 
-        if (web?.ok && web.text && orgNeedsLiveCheck(recentUserContext)) {
+        if (web?.ok && web.found && web.text) {
           return res.json({ reply: formatWebAnswer(web.text, web.citations || []) });
         }
       }
@@ -1041,6 +1083,28 @@ app.post("/api/chat", async (req, res) => {
     }
 
     // ---------- CONTENT PATH ----------
+    // For TIM/Uni factual questions, prefer concise web search over generic model answers.
+    if (USE_WEB_SEARCH && liveContent) {
+      console.log("WEB SEARCH TRIGGERED:", lastUserText);
+
+      const web = await callWebSearch({
+        userText: retrievalQueryText,
+        language,
+        allowedDomains: webSearchDomainsFor("content"),
+      });
+
+      if (web?.ok && web.found && web.text) {
+        return res.json({ reply: formatWebAnswer(web.text, web.citations || []) });
+      }
+
+      return res.json({
+        reply:
+          language === "de"
+            ? "Ich konnte dazu keine verlässliche Information auf den offiziellen Uni-Wien/TIM-Seiten finden."
+            : "I could not find reliable information for that on the official Uni Wien/TIM pages.",
+      });
+    }
+
     const systemMessage = {
       role: "system",
       content:
@@ -1054,28 +1118,6 @@ app.post("/api/chat", async (req, res) => {
 
     const outbound = [runtimeContextMessage, systemMessage, ...messages];
     const contentReply = await callContentLLM(outbound);
-
-    if (USE_WEB_SEARCH && contentNeedsLiveCheck(recentUserContext)) {
-      console.log("WEB SEARCH TRIGGERED:", lastUserText);
-
-      const web = await callWebSearch({
-        userText: recentUserContext,
-        language,
-        allowedDomains: webSearchDomainsFor("content"),
-      });
-
-      if (web?.ok && web.text) {
-        return res.json({ reply: formatWebAnswer(web.text, web.citations || []) });
-      }
-
-      return res.json({
-        reply:
-          language === "de"
-            ? "Ich konnte dazu keine verlässliche Information auf den offiziellen Uni-Wien/TIM-Seiten abrufen."
-            : "I could not retrieve reliable information for that from the official Uni Wien/TIM pages.",
-      });
-    }
-
     return res.json({ reply: contentReply });
   } catch (err) {
     console.error(err);
